@@ -1069,6 +1069,94 @@
       'discard-bytes-ok': 'uint64' } }
 
 ##
+# @BlockStatsSpecificNiova:
+#
+# File driver statistics
+#
+# @io-size-small: IO size < 4k
+# @io-size-4096: IO size = 4k
+# @io-size-large: IO size > 4k
+# @io-size-max: IO size > 4k
+# @iov-len-small: IOV len < 4k
+# @iov-len-4096: IOV len < 4k
+# @iov-len-large: IOV len < 4k
+# @iov-len-max: IOV len < 4k
+# @iov-cnt-one: 'uint64',
+# @iov-cnt-less: 'uint64',
+# @iov-cnt-more: 'uint64'
+# @iov-cnt-max: 'uint64'
+# @qd-cur: 'uint64'
+# @qd-max: 'uint64'
+# Since: 4.2
+##
+{ 'struct': 'BlockStatsSpecificNiova',
+  'data': {
+      'io-size-small': 'uint64',
+      'io-size-4096': 'uint64',
+      'io-size-large': 'uint64',
+      'io-size-min': 'uint64',
+      'io-size-max': 'uint64',
+      'iov-len-small': 'uint64',
+      'iov-len-4096': 'uint64',
+      'iov-len-large': 'uint64',
+      'iov-len-min': 'uint64',
+      'iov-len-max': 'uint64',
+      'iov-cnt-one': 'uint64',
+      'iov-cnt-less': 'uint64',
+      'iov-cnt-more': 'uint64',
+      'iov-cnt-max': 'uint64',
+      'iov-cnt-min': 'uint64',
+      'qd-cur': 'uint64',
+      'qd-max': 'uint64'
+      } }
+
+##
+# @BlockStatsSpecificTestdev:
+#
+# File driver statistics
+#
+# @io-size-small: IO size < 4k
+# @io-size-4096: IO size = 4k
+# @io-size-large: IO size > 4k
+# @io-size-max: IO size > 4k
+# @iov-len-small: IOV len < 4k
+# @iov-len-4096: IOV len < 4k
+# @iov-len-large: IOV len < 4k
+# @iov-len-max: IOV len < 4k
+# @iov-cnt-one: 'uint64',
+# @iov-cnt-less: 'uint64',
+# @iov-cnt-more: 'uint64'
+# @iov-cnt-max: 'uint64'
+# @qd-cur: 'uint64'
+# @qd-max: 'uint64'
+# @qd-flush-max: 'uint64'
+# @qd-flush: 'uint64'
+# Since: 4.2
+##
+{ 'struct': 'BlockStatsSpecificTestdev',
+  'data': {
+      'io-size-small': 'uint64',
+      'io-size-4096': 'uint64',
+      'io-size-large': 'uint64',
+      'io-size-min': 'uint64',
+      'io-size-max': 'uint64',
+      'iov-len-small': 'uint64',
+      'iov-len-4096': 'uint64',
+      'iov-len-large': 'uint64',
+      'iov-len-min': 'uint64',
+      'iov-len-max': 'uint64',
+      'iov-cnt-one': 'uint64',
+      'iov-cnt-less': 'uint64',
+      'iov-cnt-more': 'uint64',
+      'iov-cnt-max': 'uint64',
+      'iov-cnt-min': 'uint64',
+      'qd-cur': 'uint64',
+      'qd-max': 'uint64',
+      'qd-flush': 'uint64',
+      'qd-flush-max': 'uint64'
+      } }
+
+##
 # @BlockStatsSpecificNvme:
 #
 # NVMe driver statistics
@@ -1100,6 +1188,8 @@
   'base': { 'driver': 'BlockdevDriver' },
   'discriminator': 'driver',
   'data': {
+      'testdev': 'BlockStatsSpecificTestdev',
+      'niova': 'BlockStatsSpecificNiova',
       'file': 'BlockStatsSpecificFile',
       'host_device': { 'type': 'BlockStatsSpecificFile',
                        'if': 'HAVE_HOST_BLOCK_DEVICE' },
@@ -3197,6 +3287,7 @@
             { 'name': 'io_uring', 'if': 'CONFIG_BLKIO' },
             'iscsi',
             'luks', 'nbd', 'nfs', 'null-aio', 'null-co', 'nvme',
+            'niova',
             { 'name': 'nvme-io_uring', 'if': 'CONFIG_BLKIO' },
             'parallels', 'preallocate', 'qcow', 'qcow2', 'qed', 'quorum',
             'raw', 'rbd',

@@ -1292,6 +1292,18 @@ if not get_option('rbd').auto() or have_block
   endif
 endif
 
+niova = not_found
+niova_block = not_found
+if not get_option('niova').auto() or have_block
+  niova = dependency('niova', version: '>=0.1.0',
+                         required: get_option('niova'),
+                         method: 'pkg-config', kwargs: static_kwargs)
+  niova_block = dependency('niova', version: '>=0.1.0',
+                         required: get_option('niova'),
+                         method: 'pkg-config', kwargs: static_kwargs)
+endif
+
+
 glusterfs = not_found
 glusterfs_ftruncate_has_stat = false
 glusterfs_iocb_has_stat = false
@@ -2120,6 +2132,7 @@ config_host_data.set('CONFIG_CURL', curl.found())
 config_host_data.set('CONFIG_CURSES', curses.found())
 config_host_data.set('CONFIG_GBM', gbm.found())
 config_host_data.set('CONFIG_GIO', gio.found())
+config_host_data.set('CONFIG_NIOVA', niova.found())
 config_host_data.set('CONFIG_GLUSTERFS', glusterfs.found())
 if glusterfs.found()
   config_host_data.set('CONFIG_GLUSTERFS_XLATOR_OPT', glusterfs.version().version_compare('>=4'))
@@ -4367,6 +4380,7 @@ if targetos == 'windows'
   endif
 endif
 summary_info += {'seccomp support':   seccomp}
+summary_info += {'Niova support': niova.found()}
 summary_info += {'GlusterFS support': glusterfs}
 summary_info += {'hv-balloon support': hv_balloon}
 summary_info += {'TPM support':       have_tpm}
@@ -4381,7 +4395,6 @@ summary_info += {'capstone':          capstone}
 summary_info += {'libpmem support':   libpmem}
 summary_info += {'libdaxctl support': libdaxctl}
 summary_info += {'libudev':           libudev}
-# Dummy dependency, keep .found()
 summary_info += {'FUSE lseek':        fuse_lseek.found()}
 summary_info += {'selinux':           selinux}
 summary_info += {'libdw':             libdw}
