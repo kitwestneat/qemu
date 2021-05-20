@@ -20,6 +20,7 @@
 
 #define NIOVADEV_DEFAULT_FILE_SIZE ((size_t)1 << 31)
 #define NIOVADEV_BLOCK_SIZE 4096
+#define NIOVADEV_MAX_XFER_BLKS 1024
 #define NIOVADEV_MAX_IOV 512
 #define NIOVADEV_REQ_OPTS 0
 
@@ -221,27 +222,33 @@ struct niovadev_cb_data {
 static void niovadev_rw_cb_bh(void *arg)
 {
 	struct niovadev_cb_data *data = arg;
-    qemu_coroutine_enter(data->co);
+    if (!data->co) {
+		aio_bh_schedule_oneshot(data->ctx, niovadev_rw_cb_bh, data);
+    } else {
+		qemu_coroutine_enter(data->co);
+	}
 }
 
 // niova context
 static void niovadev_rw_cb(void *arg, ssize_t rc) {
 	struct niovadev_cb_data *data = arg;
 	data->ret = rc;
-    if (!data->co) {
-        /* rw hasn't yielded, don't enter. ret is set, so rw will never yield */
-        return;
-    }
-    replay_bh_schedule_oneshot_event(data->ctx, niovadev_rw_cb_bh, data);
+    aio_bh_schedule_oneshot(data->ctx, niovadev_rw_cb_bh, data);
 }
 
 static coroutine_fn int niovadev_co_rw(bool is_write, BlockDriverState *bs,
-                                      int64_t start_blk, int nblk,
+                                      int64_t start_512_blk, int nblk,
                                       QEMUIOVector *qiov)
 {
     NiovaDevState *s = bs->opaque;
+	if (start_512_blk % 8) {
+		fprintf(stderr, "startblk not aligned %ld\n", start_512_blk);
+		return -EINVAL;
+	}
+
 	// QEMU uses 512 byte blocks even if device uses 4k blocks
-	if (start_blk > (s->niova_opts.iopmo_file_size / 512)) {
+	int64_t start_blk = start_512_blk / 8;
+	if (start_blk > s->niova_opts.iopmo_file_size) {
 		fprintf(stderr, "startblk %ld max block: %ld\n", start_blk, s->niova_opts.iopmo_file_size / 512);
 		return -EINVAL;
 	}
@@ -254,6 +261,9 @@ static coroutine_fn int niovadev_co_rw(bool is_write, BlockDriverState *bs,
         .ctx = bdrv_get_aio_context(bs),
 		.ret = -EINPROGRESS,
 	};
+
+	fprintf(stderr, "niova %s 4k sblk %ld 512 nblk %d niov %d iov[0].len %zu\n", is_write ? "write" : "read", start_blk, nblk,
+			qiov->niov, qiov->iov[0].iov_len);
 
 	int rc;
 	if (is_write)
@@ -274,10 +284,11 @@ static coroutine_fn int niovadev_co_rw(bool is_write, BlockDriverState *bs,
 	}
 
 	cb_data.co = qemu_coroutine_self();
-	fprintf(stderr, "yielding\n");
-    while (cb_data.ret == -EINPROGRESS) {
+    AioContext *co_ctx = qemu_coroutine_get_aio_context(cb_data.co);
+	fprintf(stderr, "yielding, equal ctx? %s\n", co_ctx == cb_data.ctx ? "yes" : "no");
+	do {
         qemu_coroutine_yield();
-    }
+    } while (cb_data.ret == -EINPROGRESS);
 	fprintf(stderr, "done yielding, ret=%zd\n", cb_data.ret);
 	s->stats.qd_cur--;
 
@@ -352,6 +363,14 @@ static int coroutine_fn niovadev_co_truncate(BlockDriverState *bs, int64_t offse
     return 0;
 }
 
+static int coroutine_fn niovadev_co_pdiscard(BlockDriverState *bs,
+                                             int64_t offset,
+                                             int bytes)
+{
+	fprintf(stderr, "discard: offset %ld bytes %d\n", offset, bytes);
+	return 0;
+}
+
 static int niovadev_reopen_prepare(BDRVReopenState *reopen_state,
                                BlockReopenQueue *queue, Error **errp)
 {
@@ -373,8 +392,10 @@ static void niovadev_refresh_limits(BlockDriverState *bs, Error **errp)
 {
     bs->bl.opt_mem_alignment = NIOVADEV_BLOCK_SIZE;
     bs->bl.request_alignment = NIOVADEV_BLOCK_SIZE;
-    bs->bl.max_transfer = pow2floor(BDRV_REQUEST_MAX_BYTES);
+	bs->bl.pdiscard_alignment = NIOVADEV_BLOCK_SIZE;
+    bs->bl.max_transfer = NIOVADEV_MAX_XFER_BLKS * NIOVADEV_BLOCK_SIZE;
 	bs->bl.max_iov = NIOVADEV_MAX_IOV;
+    bs->bl.max_pdiscard = QEMU_ALIGN_DOWN(INT_MAX, NIOVADEV_BLOCK_SIZE);
 }
 
 static BlockStatsSpecific *niovadev_get_specific_stats(BlockDriverState *bs)
@@ -429,6 +450,7 @@ static BlockDriver bdrv_testdev = {
     .bdrv_getlength           = niovadev_getlength,
     .bdrv_probe_blocksizes    = niovadev_probe_blocksizes,
     .bdrv_co_truncate         = niovadev_co_truncate,
+    .bdrv_co_pdiscard         = niovadev_co_pdiscard,
 
     .bdrv_co_readv           = niovadev_co_readv,
     .bdrv_co_writev          = niovadev_co_writev,
