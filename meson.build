@@ -1297,10 +1297,10 @@ niova_block = not_found
 if not get_option('niova').auto() or have_block
   niova = dependency('niova', version: '>=0.1.0',
                          required: get_option('niova'),
-                         method: 'pkg-config', kwargs: static_kwargs)
+                         method: 'pkg-config')
   niova_block = dependency('niova', version: '>=0.1.0',
                          required: get_option('niova'),
-                         method: 'pkg-config', kwargs: static_kwargs)
+                         method: 'pkg-config')
 endif
 
 
