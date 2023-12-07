@@ -109,7 +109,7 @@ foreach m : [
   [libiscsi, 'iscsi', [files('iscsi.c'), libm]],
   [libnfs, 'nfs', files('nfs.c')],
   [libssh, 'ssh', files('ssh.c')],
-  [niova, 'niova', niova, 'niova.c'],
+  [niova, 'niova', [files('niova.c'), niova_block]],
   [rbd, 'rbd', files('rbd.c')],
 ]
   if m[0].found()

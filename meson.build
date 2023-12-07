@@ -1298,7 +1298,7 @@ if not get_option('niova').auto() or have_block
   niova = dependency('niova', version: '>=0.1.0',
                          required: get_option('niova'),
                          method: 'pkg-config')
-  niova_block = dependency('niova', version: '>=0.1.0',
+  niova_block = dependency('niova_block', version: '>=0.1.0',
                          required: get_option('niova'),
                          method: 'pkg-config')
 endif

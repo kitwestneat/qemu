@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+
 #include <stdlib.h>
 #include <linux/vfio.h>
 #include "qapi/error.h"
@@ -10,13 +11,14 @@
 #include "qemu/cutils.h"
 #include "qemu/option.h"
 #include "qemu/vfio-helpers.h"
+#include "block/block-io.h"
 #include "block/block_int.h"
 #include "sysemu/replay.h"
 #include "trace.h"
 
 #include <niova/common.h>
-#include <niova/niorq_mgr.h>
 #include <niova/nclient.h>
+#include <niova/nclient_private.h>
 
 #define NIOVADEV_DEFAULT_FILE_SIZE ((size_t)1 << 31)
 #define NIOVADEV_BLOCK_SIZE 4096
@@ -26,30 +28,12 @@
 
 typedef struct NiovaDevState NiovaDevState;
 
-struct io_processor_mgr_opts niovaDevDefaultOpts = {
-    .iopmo_file_name = "./niova-block-test.img",
-    .iopmo_queue_depth = 256,
-    .iopmo_is_server = 0,
-    .iopmo_directio = 0,
-    .iopmo_memalign = 0,
-    .iopmo_bufs_registered = 0,
-    .iopmo_files_registered = 0,
-    .iopmo_touch_pages = 0,
-    .iopmo_no_sgl = 0,
-    .iopmo_lat_measure_freq = 0, // default - every time
-    .iopmo_net_only = 0,
-    .iopmo_mmap = 0,
-    .iopmo_conn_credits = CONN_HANDLE_DEF_CREDITS,
-    .iopmo_uring_entries = URING_ENTRIES_DEF,
-    .iopmo_file_size = NIOVADEV_DEFAULT_FILE_SIZE,
-    .iopmo_buf_sizes_in_blks = {SMALL_NBLKS, MEDIUM_NBLKS, LARGE_NBLKS},
-    .iopmo_buf_counts = {SMALL_NBUFS, MEDIUM_NBUFS, LARGE_NBUFS},
-};
-
 struct NiovaDevState {
 	niova_block_client_t *client;
+    struct niova_block_client_xopts xopts;
+    int64_t vdev_size;
+
 	// uuid_t uuid; should use target_uuid on the opts
-	struct io_processor_mgr_opts niova_opts;
 	struct {
 		uint64_t io_size_small;
 		uint64_t io_size_4096;
@@ -71,8 +55,8 @@ struct NiovaDevState {
 	} stats;
 };
 
-#define NIOVA_OPT_FILE_NAME "file-name"
 #define NIOVA_OPT_UUID "uuid"
+#define NIOVA_OPT_VDEV "vdev"
 #define NIOVA_OPT_QUEUE_DEPTH "queue-depth"
 
 static QemuOptsList runtime_opts = {
@@ -80,14 +64,14 @@ static QemuOptsList runtime_opts = {
     .head = QTAILQ_HEAD_INITIALIZER(runtime_opts.head),
     .desc = {
         {
-            .name = NIOVA_OPT_FILE_NAME,
-            .type = QEMU_OPT_STRING,
-            .help = "Backing File",
-        },
-        {
             .name = NIOVA_OPT_UUID,
             .type = QEMU_OPT_STRING,
             .help = "UUID",
+        },
+        {
+            .name = NIOVA_OPT_VDEV,
+            .type = QEMU_OPT_STRING,
+            .help = "vdev UUID",
         },
         {
             .name = NIOVA_OPT_QUEUE_DEPTH,
@@ -98,9 +82,9 @@ static QemuOptsList runtime_opts = {
     },
 };
 
-/* Parse a filename in the format of niova://[filename][#queue_depth]. Example:
+/* Parse a connection in the format of niova://[uuid][#queue_depth]. Example:
  *
- *     niova://uuid/./niova-block.img#32
+ *     niova://uuid#32
  */
 static void niovadev_parse_filename(const char *filename, QDict *options,
                                    Error **errp)
@@ -112,8 +96,7 @@ static void niovadev_parse_filename(const char *filename, QDict *options,
 
     const char *pref_end = filename + pref;
     const char *slash = strchr(pref_end, '/');
-    const char *pound = strchr(slash ? slash : pref_end, '#');
-	const char *uuid_end = slash ? slash : pound;
+	const char *uuid_end = slash;
     if (!uuid_end) {
         qdict_put_str(options, NIOVA_OPT_UUID, pref_end);
         return;
@@ -123,20 +106,17 @@ static void niovadev_parse_filename(const char *filename, QDict *options,
 	qdict_put_str(options, NIOVA_OPT_UUID, uuid);
 	g_free(uuid);
 
-	if (slash) {
-		const char *fn_str = slash + 1;
-		if (*fn_str) {
-			if (!pound) {
-				qdict_put_str(options, NIOVA_OPT_FILE_NAME, fn_str);
-				return;
-			}
-			if (fn_str != pound) {
-				void *fn = g_strndup(fn_str, pound - fn_str);
-				qdict_put_str(options, NIOVA_OPT_FILE_NAME, fn);
-				g_free(fn);
-			}
-		}
-	}
+    const char *vdev_start = uuid_end + 1;
+    const char *pound = strchr(vdev_start, '#');
+	const char *vdev_end = pound;
+    if (!vdev_end) {
+        qdict_put_str(options, NIOVA_OPT_VDEV, vdev_start);
+        return;
+    }
+
+	char *vdev = g_strndup(uuid_end, vdev_end - vdev_start);
+	qdict_put_str(options, NIOVA_OPT_VDEV, vdev);
+	g_free(vdev);
 
 	if (!pound)
 		return;
@@ -164,7 +144,21 @@ static void niovadev_close(BlockDriverState *bs)
 }
 
 static int niova_client_setup(NiovaDevState *s) {
-	return NiovaBlockClientNew(&s->client, &s->niova_opts);
+	struct vdev_info vdi;
+	vdi.vdi_mode = VDEV_MODE_CLIENT_TEST;
+	vdi.vdi_num_vblks = NIOVADEV_DEFAULT_FILE_SIZE;
+
+	int rc = niova_block_client_set_private_opts(&s->xopts, &vdi, NULL, NULL);
+	if (rc)
+		return rc;
+
+	rc = NiovaBlockClientNew(&s->client, &s->xopts.npcx_opts);
+	if (rc)
+		return rc;
+
+	s->vdev_size = niova_block_client_vdev_size(&s->client);
+
+	return 0;
 }
 
 static int niovadev_file_open(BlockDriverState *bs, QDict *options, int flags,
@@ -174,20 +168,21 @@ static int niovadev_file_open(BlockDriverState *bs, QDict *options, int flags,
     qemu_opts_absorb_qdict(opts, options, &error_abort);
 
     NiovaDevState *s = bs->opaque;
-	s->niova_opts = niovaDevDefaultOpts;
 
 	// XXX do these strdups need to be freed?
-    const char *uuid = qemu_opt_get(opts, NIOVA_OPT_UUID);
-    if (uuid)
-		uuid_parse(uuid, s->niova_opts.iopmo_target_uuid);
-    const char *device = qemu_opt_get(opts, NIOVA_OPT_FILE_NAME);
-    if (device)
-		s->niova_opts.iopmo_file_name = g_strdup(device);
+	const char *uuid = qemu_opt_get(opts, NIOVA_OPT_UUID);
+	if (uuid)
+		uuid_parse(uuid, s->xopts.npcx_opts.target_uuid);
+
+	const char *vdev = qemu_opt_get(opts, NIOVA_OPT_VDEV);
+	if (vdev)
+		uuid_parse(vdev, s->xopts.npcx_opts.vdev_uuid);
 
 	int qd = qemu_opt_get_number(opts, NIOVA_OPT_QUEUE_DEPTH, 0);
-    if (qd > 0)
-		s->niova_opts.iopmo_queue_depth = qd;
+	if (qd > 0)
+		s->xopts.npcx_opts.queue_depth = qd;
 
+	fprintf(stderr, "uuid=%s vdev=%s qd=%d\n", uuid, vdev, qd);
 	int rc = niova_client_setup(s);
 	if (rc || !s->client) {
 		error_setg(errp, "niova_client_setup(): %s", strerror(-rc));
@@ -202,7 +197,7 @@ static int niovadev_file_open(BlockDriverState *bs, QDict *options, int flags,
 static int64_t niovadev_getlength(BlockDriverState *bs)
 {
     NiovaDevState *s = bs->opaque;
-    return s->niova_opts.iopmo_file_size;
+    return s->vdev_size;
 }
 
 static int niovadev_probe_blocksizes(BlockDriverState *bs, BlockSizes *bsz)
@@ -248,8 +243,8 @@ static coroutine_fn int niovadev_co_rw(bool is_write, BlockDriverState *bs,
 
 	// QEMU uses 512 byte blocks even if device uses 4k blocks
 	int64_t start_blk = start_512_blk / 8;
-	if (start_blk > s->niova_opts.iopmo_file_size) {
-		fprintf(stderr, "startblk %ld max block: %ld\n", start_blk, s->niova_opts.iopmo_file_size / 512);
+	if (start_blk > s->vdev_size / NIOVADEV_BLOCK_SIZE) {
+		fprintf(stderr, "startblk %ld max block: %ld\n", start_blk, s->vdev_size / NIOVADEV_BLOCK_SIZE);
 		return -EINVAL;
 	}
 
@@ -267,15 +262,15 @@ static coroutine_fn int niovadev_co_rw(bool is_write, BlockDriverState *bs,
 
 	int rc;
 	if (is_write)
-		rc = NiovaBlockClientWritev(s->client, s->niova_opts.iopmo_target_uuid,
+		rc = NiovaBlockClientWritev(s->client,
 				start_blk, qiov->iov,
 				qiov->niov, niovadev_rw_cb,
-				(void *)&cb_data, NIOVADEV_REQ_OPTS);
+				(void *)&cb_data);
 	else
-		rc = NiovaBlockClientReadv(s->client, s->niova_opts.iopmo_target_uuid,
+		rc = NiovaBlockClientReadv(s->client,
 				start_blk, qiov->iov,
 				qiov->niov, niovadev_rw_cb,
-				(void *)&cb_data, NIOVADEV_REQ_OPTS);
+				(void *)&cb_data);
 
 	// XXX deal with errors properly
 	if (rc < 0) {
@@ -365,9 +360,9 @@ static int coroutine_fn niovadev_co_truncate(BlockDriverState *bs, int64_t offse
 
 static int coroutine_fn niovadev_co_pdiscard(BlockDriverState *bs,
                                              int64_t offset,
-                                             int bytes)
+                                             int64_t bytes)
 {
-	fprintf(stderr, "discard: offset %ld bytes %d\n", offset, bytes);
+	fprintf(stderr, "discard: offset %ld bytes %ld\n", offset, bytes);
 	return 0;
 }
 
@@ -382,10 +377,10 @@ static void niovadev_refresh_filename(BlockDriverState *bs)
     NiovaDevState *s = bs->opaque;
 	char uuid_str[UUID_STR_LEN] = {0};
 
-	uuid_unparse(s->niova_opts.iopmo_target_uuid, uuid_str);
+	uuid_unparse(s->xopts.npcx_opts.target_uuid, uuid_str);
 
-    snprintf(bs->exact_filename, sizeof(bs->exact_filename), "niova://%s/%s#%zu",
-             uuid_str, s->niova_opts.iopmo_file_name, s->niova_opts.iopmo_queue_depth);
+    snprintf(bs->exact_filename, sizeof(bs->exact_filename), "niova://%s#%u",
+             uuid_str, s->xopts.npcx_opts.queue_depth);
 }
 
 static void niovadev_refresh_limits(BlockDriverState *bs, Error **errp)
@@ -429,8 +424,8 @@ static BlockStatsSpecific *niovadev_get_specific_stats(BlockDriverState *bs)
 }
 
 static const char *const niovadev_strong_runtime_opts[] = {
-    NIOVA_OPT_FILE_NAME,
     NIOVA_OPT_UUID,
+    NIOVA_OPT_VDEV,
     NIOVA_OPT_QUEUE_DEPTH,
 
     NULL
@@ -447,7 +442,7 @@ static BlockDriver bdrv_testdev = {
     .bdrv_parse_filename      = niovadev_parse_filename,
     .bdrv_file_open           = niovadev_file_open,
     .bdrv_close               = niovadev_close,
-    .bdrv_getlength           = niovadev_getlength,
+    .bdrv_co_getlength        = niovadev_getlength,
     .bdrv_probe_blocksizes    = niovadev_probe_blocksizes,
     .bdrv_co_truncate         = niovadev_co_truncate,
     .bdrv_co_pdiscard         = niovadev_co_pdiscard,

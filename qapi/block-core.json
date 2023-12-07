@@ -3287,7 +3287,7 @@
             { 'name': 'io_uring', 'if': 'CONFIG_BLKIO' },
             'iscsi',
             'luks', 'nbd', 'nfs', 'null-aio', 'null-co', 'nvme',
-            'niova',
+            'niova', 'testdev',
             { 'name': 'nvme-io_uring', 'if': 'CONFIG_BLKIO' },
             'parallels', 'preallocate', 'qcow', 'qcow2', 'qed', 'quorum',
             'raw', 'rbd',
