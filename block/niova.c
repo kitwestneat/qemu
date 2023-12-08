@@ -20,7 +20,7 @@
 #include <niova/nclient.h>
 #include <niova/nclient_private.h>
 
-#define NIOVADEV_DEFAULT_FILE_SIZE ((size_t)1 << 31)
+#define NIOVADEV_DEFAULT_FILE_SIZE 100*((size_t)1 << 30)
 #define NIOVADEV_BLOCK_SIZE 4096
 #define NIOVADEV_MAX_XFER_BLKS 1024
 #define NIOVADEV_MAX_IOV 512
@@ -146,7 +146,7 @@ static void niovadev_close(BlockDriverState *bs)
 static int niova_client_setup(NiovaDevState *s) {
 	struct vdev_info vdi;
 	vdi.vdi_mode = VDEV_MODE_CLIENT_TEST;
-	vdi.vdi_num_vblks = NIOVADEV_DEFAULT_FILE_SIZE;
+	vdi.vdi_num_vblks = NIOVADEV_DEFAULT_FILE_SIZE / NIOVADEV_BLOCK_SIZE;
 
 	int rc = niova_block_client_set_private_opts(&s->xopts, &vdi, NULL, NULL);
 	if (rc)
@@ -156,7 +156,7 @@ static int niova_client_setup(NiovaDevState *s) {
 	if (rc)
 		return rc;
 
-	s->vdev_size = niova_block_client_vdev_size(&s->client);
+	s->vdev_size = NIOVADEV_DEFAULT_FILE_SIZE;
 
 	return 0;
 }
